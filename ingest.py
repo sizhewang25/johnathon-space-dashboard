@@ -224,6 +224,31 @@ def ingest_table(conn, table_name, filepath):
     return new_count, updated_count, unchanged_count, removed_count
 
 
+def create_views(conn):
+    """Create _latest convenience views for all tables."""
+    for table in TABLES:
+        if not table_exists(conn, table):
+            continue
+        key_cols = TABLE_KEYS[table]
+        key_sql = ', '.join(f't.[{c}]' for c in key_cols)
+        key_sql_g = ', '.join(f'[{c}]' for c in key_cols)
+        join_cond = ' AND '.join(f't.[{c}] = g.[{c}]' for c in key_cols)
+
+        conn.execute(f"DROP VIEW IF EXISTS [{table}_latest]")
+        conn.execute(f"""
+            CREATE VIEW [{table}_latest] AS
+            SELECT t.* FROM [{table}] t
+            INNER JOIN (
+                SELECT {key_sql_g}, MAX([_snapshot_date]) AS _max_sd
+                FROM [{table}]
+                GROUP BY {key_sql_g}
+            ) g ON {join_cond} AND t.[_snapshot_date] = g.[_max_sd]
+            WHERE t.[_removed_date] = ''
+        """)
+    conn.commit()
+    print(f"\n  Created {len(TABLES)} _latest views")
+
+
 def main():
     conn = sqlite3.connect(DB_PATH)
     print(f"Database: {DB_PATH}\n")
@@ -237,6 +262,8 @@ def main():
         new, updated, unchanged, removed = ingest_table(conn, table, path)
         total = new + updated + unchanged
         print(f"  {table}: {total} rows — {new} new, {updated} updated, {unchanged} unchanged, {removed} removed")
+
+    create_views(conn)
 
     conn.close()
     print("\nIngest complete.")

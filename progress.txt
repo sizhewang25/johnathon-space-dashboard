@@ -25,3 +25,10 @@
 - Row counts: launchlog=29193, active=15050, satcat=68260, currentcat=80257, geotab=1939, psatcat=26271, ftocat=1798, deepcat=1203
 - Second run produces 0 new, 0 updated for all 8 tables (dedup verified)
 - Table creation is now lazy (only if table doesn't exist), no longer drops on each run
+
+## Story #3 - Removal Detection (2026-03-19)
+- Removal detection queries DB for all active keys (grouped by natural key, _removed_date IS NULL/empty)
+- Compares against source_keys (key_occurrence dict from insert phase) to find missing keys
+- Updates only the latest row (MAX(rowid)) per missing key with _removed_date = today
+- Keys that reappear later get a new INSERT naturally (hash-dedup treats them as new)
+- Confirmed 0 removals on unchanged source data across all 8 tables
