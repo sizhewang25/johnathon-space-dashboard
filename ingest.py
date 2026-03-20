@@ -4,6 +4,8 @@
 import sqlite3
 import os
 import re
+import hashlib
+from datetime import date
 
 DATA_DIR = os.path.join(os.path.dirname(__file__) or '.', '..', 'johnathon-space-archives', 'data')
 DB_PATH = os.path.join(os.path.dirname(__file__) or '.', 'gcat.db')
@@ -79,11 +81,114 @@ def create_table(conn, table_name, columns):
     conn.commit()
 
 
+def parse_tsv_rows(filepath):
+    """Yield data rows (non-comment, non-blank) as lists of fields."""
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            yield stripped.split('\t')
+
+
+def compute_hash(fields):
+    """SHA-256 of all fields joined by tab."""
+    return hashlib.sha256('\t'.join(fields).encode('utf-8')).hexdigest()
+
+
+def load_existing_hashes(conn, table_name, key_cols):
+    """Load latest _row_hash per key from DB. Returns dict key_tuple -> hash."""
+    key_sql = ', '.join(f'[{c}]' for c in key_cols)
+    # Get max snapshot_date per key, then join to get hash
+    # For duplicate keys, we want ALL (key, hash) pairs from latest snapshot
+    # Use rowid to get the last inserted row per key+snapshot combo
+    query = f"""
+        SELECT {key_sql}, [_row_hash], rowid
+        FROM [{table_name}]
+        WHERE [_snapshot_date] = (SELECT MAX([_snapshot_date]) FROM [{table_name}])
+        ORDER BY rowid
+    """
+    result = {}  # key -> list of hashes
+    try:
+        for row in conn.execute(query):
+            key = tuple(row[:len(key_cols)])
+            h = row[len(key_cols)]
+            result.setdefault(key, []).append(h)
+    except sqlite3.OperationalError:
+        pass  # table doesn't exist yet
+    return result
+
+
+def table_exists(conn, table_name):
+    r = conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", (table_name,)).fetchone()
+    return r[0] > 0
+
+
+def ingest_table(conn, table_name, filepath):
+    """Ingest a single TSV file with hash-dedup logic. Returns (new, updated, unchanged)."""
+    columns = parse_tsv_header(filepath)
+    if columns is None:
+        print(f"  {table_name}: no header found, skipping")
+        return 0, 0, 0
+
+    key_cols = TABLE_KEYS[table_name]
+    key_indices = [columns.index(k) for k in key_cols]
+    today = date.today().isoformat()
+
+    # Create table if not exists
+    if not table_exists(conn, table_name):
+        create_table(conn, table_name, columns)
+
+    # Load existing hashes
+    existing = load_existing_hashes(conn, table_name, key_cols)
+
+    # Process rows — track per-key occurrence index for duplicate key support
+    new_count = 0
+    updated_count = 0
+    unchanged_count = 0
+    to_insert = []
+    key_occurrence = {}  # track which occurrence of each key we're on
+
+    all_cols = columns + METADATA_COLS
+    placeholders = ', '.join(['?'] * len(all_cols))
+    col_sql = ', '.join(f'[{c}]' for c in all_cols)
+    insert_sql = f"INSERT INTO [{table_name}] ({col_sql}) VALUES ({placeholders})"
+
+    for fields in parse_tsv_rows(filepath):
+        # Pad or truncate to match column count
+        if len(fields) < len(columns):
+            fields = fields + [''] * (len(columns) - len(fields))
+        elif len(fields) > len(columns):
+            fields = fields[:len(columns)]
+
+        row_hash = compute_hash(fields)
+        key = tuple(fields[i] for i in key_indices)
+        
+        # Track occurrence index for duplicate keys
+        occ = key_occurrence.get(key, 0)
+        key_occurrence[key] = occ + 1
+        
+        prev_hashes = existing.get(key, [])
+        if occ < len(prev_hashes) and prev_hashes[occ] == row_hash:
+            unchanged_count += 1
+            continue
+        
+        if occ >= len(prev_hashes):
+            new_count += 1
+        else:
+            updated_count += 1
+
+        to_insert.append(fields + [row_hash, today, ''])
+
+    # Batch insert
+    if to_insert:
+        conn.executemany(insert_sql, to_insert)
+        conn.commit()
+
+    return new_count, updated_count, unchanged_count
+
+
 def main():
-    # Remove old DB for clean schema creation
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
-    
     conn = sqlite3.connect(DB_PATH)
     print(f"Database: {DB_PATH}\n")
 
@@ -92,17 +197,13 @@ def main():
         if not os.path.exists(path):
             print(f"  {table}: FILE NOT FOUND at {path}")
             continue
-        
-        columns = parse_tsv_header(path)
-        if columns is None:
-            print(f"  {table}: no header found, skipping")
-            continue
-        
-        create_table(conn, table, columns)
-        print(f"  {table}: created with {len(columns)} columns + 3 metadata cols, keys={TABLE_KEYS[table]}")
+
+        new, updated, unchanged = ingest_table(conn, table, path)
+        total = new + updated + unchanged
+        print(f"  {table}: {total} rows — {new} new, {updated} updated, {unchanged} unchanged")
 
     conn.close()
-    print("\nSchema creation complete (empty tables).")
+    print("\nIngest complete.")
 
 
 if __name__ == '__main__':
