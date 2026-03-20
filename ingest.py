@@ -124,6 +124,39 @@ def table_exists(conn, table_name):
     return r[0] > 0
 
 
+def detect_removals(conn, table_name, key_cols, source_keys, today):
+    """Detect keys present in DB but missing from source. Update _removed_date on latest row."""
+    key_sql = ', '.join(f'[{c}]' for c in key_cols)
+    
+    # Get all active keys from DB (latest snapshot, not yet removed)
+    # We need the rowid of the latest row per key to update only that one
+    query = f"""
+        SELECT {key_sql}, MAX(rowid) as latest_rowid
+        FROM [{table_name}]
+        WHERE [_removed_date] = '' OR [_removed_date] IS NULL
+        GROUP BY {key_sql}
+    """
+    
+    rowids_to_update = []
+    try:
+        for row in conn.execute(query):
+            key = tuple(row[:len(key_cols)])
+            rowid = row[len(key_cols)]
+            if key not in source_keys:
+                rowids_to_update.append((today, rowid))
+    except sqlite3.OperationalError:
+        return 0
+    
+    if rowids_to_update:
+        conn.executemany(
+            f"UPDATE [{table_name}] SET [_removed_date] = ? WHERE rowid = ?",
+            rowids_to_update
+        )
+        conn.commit()
+    
+    return len(rowids_to_update)
+
+
 def ingest_table(conn, table_name, filepath):
     """Ingest a single TSV file with hash-dedup logic. Returns (new, updated, unchanged)."""
     columns = parse_tsv_header(filepath)
@@ -185,7 +218,10 @@ def ingest_table(conn, table_name, filepath):
         conn.executemany(insert_sql, to_insert)
         conn.commit()
 
-    return new_count, updated_count, unchanged_count
+    # Removal detection: find keys in DB (latest snapshot, not removed) but missing from source
+    removed_count = detect_removals(conn, table_name, key_cols, key_occurrence, today)
+
+    return new_count, updated_count, unchanged_count, removed_count
 
 
 def main():
@@ -198,9 +234,9 @@ def main():
             print(f"  {table}: FILE NOT FOUND at {path}")
             continue
 
-        new, updated, unchanged = ingest_table(conn, table, path)
+        new, updated, unchanged, removed = ingest_table(conn, table, path)
         total = new + updated + unchanged
-        print(f"  {table}: {total} rows — {new} new, {updated} updated, {unchanged} unchanged")
+        print(f"  {table}: {total} rows — {new} new, {updated} updated, {unchanged} unchanged, {removed} removed")
 
     conn.close()
     print("\nIngest complete.")
