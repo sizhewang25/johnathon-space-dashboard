@@ -32,3 +32,12 @@
 - Updates only the latest row (MAX(rowid)) per missing key with _removed_date = today
 - Keys that reappear later get a new INSERT naturally (hash-dedup treats them as new)
 - Confirmed 0 removals on unchanged source data across all 8 tables
+
+## Story #4 — Convenience Views & query.py Update
+- Created 8 _latest views in ingest.py (created after data insertion via create_views())
+- View pattern: JOIN on key + MAX(_snapshot_date), WHERE _removed_date = ''
+- _removed_date uses empty string '' (not NULL) for active records
+- launchlog_latest handles composite key (Launch_Tag, Piece) — all dupe-key rows from latest snapshot included
+- query.py --tables flag shows all tables and views with row counts
+- Interactive mode shows tables/views on startup automatically
+- View counts match table counts (no removals yet in dataset)
