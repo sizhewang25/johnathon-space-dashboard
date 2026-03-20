@@ -1,0 +1,49 @@
+--- Project Init (2026-03-19) ---
+- Project created with basic full-reload ingest.py and query.py
+- 8 GCAT TSV tables: launchlog, active, satcat, currentcat, geotab, psatcat, ftocat, deepcat
+- Data source: ../johnathon-space-archives/data/*.tsv
+- TSV quirks: header line starts with #, fields tab-separated, whitespace-padded
+- Primary keys: JCAT for most tables, Launch_Tag+Piece for launchlog
+- DB path: gcat.db (gitignored)
+- GitHub repo: sizhewang25/johnathon-space-dashboard (HTTPS push with gh token)
+- PLAN.md has full architecture spec
+
+## Story #1 - Schema with metadata columns and indexes (2026-03-19)
+- Rewrote ingest.py: schema-only creation with _row_hash, _snapshot_date, _removed_date metadata cols
+- TABLE_KEYS dict maps each table to its natural key columns
+- 3 indexes per table: key, _snapshot_date, composite key+snapshot DESC
+- parse_tsv_header() reads header from # line with tabs, cleans/deduplicates column names
+- All 8 tables created successfully with correct schemas
+- launchlog uses composite key (Launch_Tag, Piece); all others use JCAT
+- Column counts: active=16, launchlog=20, satcat/ftocat/deepcat=42, currentcat=23, geotab=19, psatcat=28
+
+## Story #2 - Hash-dedup insert logic (2026-03-19)
+- SHA-256 hash computed from all original fields joined by tab separator
+- Existing hashes loaded in bulk per key from latest snapshot_date
+- Duplicate keys in source data (launchlog has 733 duplicate Launch_Tag+Piece combos) handled via occurrence-index tracking
+- Batch INSERT via executemany in single transaction per table
+- Row counts: launchlog=29193, active=15050, satcat=68260, currentcat=80257, geotab=1939, psatcat=26271, ftocat=1798, deepcat=1203
+- Second run produces 0 new, 0 updated for all 8 tables (dedup verified)
+- Table creation is now lazy (only if table doesn't exist), no longer drops on each run
+
+## Story #3 - Removal Detection (2026-03-19)
+- Removal detection queries DB for all active keys (grouped by natural key, _removed_date IS NULL/empty)
+- Compares against source_keys (key_occurrence dict from insert phase) to find missing keys
+- Updates only the latest row (MAX(rowid)) per missing key with _removed_date = today
+- Keys that reappear later get a new INSERT naturally (hash-dedup treats them as new)
+- Confirmed 0 removals on unchanged source data across all 8 tables
+
+## Story #4 — Convenience Views & query.py Update
+- Created 8 _latest views in ingest.py (created after data insertion via create_views())
+- View pattern: JOIN on key + MAX(_snapshot_date), WHERE _removed_date = ''
+- _removed_date uses empty string '' (not NULL) for active records
+- launchlog_latest handles composite key (Launch_Tag, Piece) — all dupe-key rows from latest snapshot included
+- query.py --tables flag shows all tables and views with row counts
+- Interactive mode shows tables/views on startup automatically
+- View counts match table counts (no removals yet in dataset)
+
+## Story #5 - README and sync.sh
+- README rewritten with architecture diagram, hash-dedup explanation, all 7 query patterns
+- sync.sh created: pulls archive repo then runs ingest.py
+- _latest views documented (e.g., active_latest)
+- Noted _removed_date uses empty string '' not NULL

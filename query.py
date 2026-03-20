@@ -29,6 +29,26 @@ def run_query(conn, sql):
     print(f"\n({len(rows)} rows)")
 
 
+def show_tables(conn):
+    """Show all tables and views with row counts."""
+    print("\n=== Tables ===")
+    tables = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).fetchall()
+    for (name,) in tables:
+        count = conn.execute(f"SELECT COUNT(*) FROM [{name}]").fetchone()[0]
+        print(f"  {name:20s} {count:>8,} rows")
+
+    print("\n=== Views ===")
+    views = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name"
+    ).fetchall()
+    for (name,) in views:
+        count = conn.execute(f"SELECT COUNT(*) FROM [{name}]").fetchone()[0]
+        print(f"  {name:20s} {count:>8,} rows")
+    print()
+
+
 def main():
     if not os.path.exists(DB_PATH):
         print(f"Database not found: {DB_PATH}\nRun ingest.py first.")
@@ -37,12 +57,17 @@ def main():
     conn = sqlite3.connect(DB_PATH)
 
     if len(sys.argv) > 1:
+        if sys.argv[1] == '--tables':
+            show_tables(conn)
+            conn.close()
+            return
         run_query(conn, ' '.join(sys.argv[1:]))
     else:
-        print("GCAT Query Console (type .tables, .quit, or SQL)")
+        print("GCAT Query Console (type .tables, .quit, or SQL)\n")
+        show_tables(conn)
         while True:
             try:
-                sql = input("\nsql> ").strip()
+                sql = input("sql> ").strip()
             except (EOFError, KeyboardInterrupt):
                 break
             if not sql:
@@ -50,7 +75,7 @@ def main():
             if sql == '.quit':
                 break
             if sql == '.tables':
-                run_query(conn, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                show_tables(conn)
                 continue
             try:
                 run_query(conn, sql)
