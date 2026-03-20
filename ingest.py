@@ -1,14 +1,28 @@
 #!/usr/bin/env python3
-"""Ingest GCAT TSV files into a SQLite database."""
+"""Ingest GCAT TSV files into a SQLite database with hash-dedup schema."""
 
 import sqlite3
 import os
 import re
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'johnathon-space-archives', 'data')
+DATA_DIR = os.path.join(os.path.dirname(__file__) or '.', '..', 'johnathon-space-archives', 'data')
 DB_PATH = os.path.join(os.path.dirname(__file__) or '.', 'gcat.db')
 
 TABLES = ['launchlog', 'active', 'satcat', 'currentcat', 'geotab', 'psatcat', 'ftocat', 'deepcat']
+
+# Natural key columns per table
+TABLE_KEYS = {
+    'launchlog': ['Launch_Tag', 'Piece'],
+    'active':     ['JCAT'],
+    'satcat':     ['JCAT'],
+    'currentcat': ['JCAT'],
+    'geotab':     ['JCAT'],
+    'psatcat':    ['JCAT'],
+    'ftocat':     ['JCAT'],
+    'deepcat':    ['JCAT'],
+}
+
+METADATA_COLS = ['_row_hash', '_snapshot_date', '_removed_date']
 
 
 def clean_col(name):
@@ -18,72 +32,58 @@ def clean_col(name):
     return name or 'col'
 
 
-def ingest_tsv(conn, table_name, filepath):
-    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-        lines = f.readlines()
-
-    # Find header: first line starting with # that has tabs (column header row)
-    # The header line starts with #ColName\tCol2\t... 
-    # Pure comment lines start with # followed by space/text without tab structure
-    header_idx = None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith('#') and '\t' in stripped:
-            header_idx = i
-            break
+def parse_tsv_header(filepath):
+    """Parse a GCAT TSV file and return (columns, header_line_index).
     
-    if header_idx is None:
-        # Fallback: first non-empty, non-comment line
-        for i, line in enumerate(lines):
+    Header line starts with # and contains tabs.
+    Column names are cleaned for SQL compatibility.
+    """
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        for i, line in enumerate(f):
             stripped = line.strip()
-            if stripped and not stripped.startswith('#'):
-                header_idx = i
-                break
+            if stripped.startswith('#') and '\t' in stripped:
+                header_line = stripped[1:]  # strip leading #
+                raw_cols = header_line.split('\t')
+                columns = [clean_col(c) for c in raw_cols]
+                # Deduplicate
+                seen = {}
+                for j, c in enumerate(columns):
+                    if c in seen:
+                        seen[c] += 1
+                        columns[j] = f"{c}_{seen[c]}"
+                    else:
+                        seen[c] = 0
+                return columns
+    return None
 
-    if header_idx is None:
-        print(f"  {table_name}: no header found, skipping")
-        return 0
 
-    header_line = lines[header_idx].rstrip('\n')
-    if header_line.startswith('#'):
-        header_line = header_line[1:]  # strip leading #
-    raw_cols = header_line.split('\t')
-    columns = [clean_col(c) for c in raw_cols]
-    # Deduplicate
-    seen = {}
-    for i, c in enumerate(columns):
-        if c in seen:
-            seen[c] += 1
-            columns[i] = f"{c}_{seen[c]}"
-        else:
-            seen[c] = 0
-
+def create_table(conn, table_name, columns):
+    """Create table with original columns plus metadata columns and indexes."""
     conn.execute(f"DROP TABLE IF EXISTS [{table_name}]")
+    
     col_defs = ', '.join(f'[{c}] TEXT' for c in columns)
-    conn.execute(f"CREATE TABLE [{table_name}] ({col_defs})")
-
-    placeholders = ', '.join(['?'] * len(columns))
-    insert_sql = f"INSERT INTO [{table_name}] VALUES ({placeholders})"
-
-    rows = []
-    for line in lines[header_idx + 1:]:
-        stripped = line.strip()
-        if not stripped or stripped.startswith('#'):
-            continue
-        fields = line.rstrip('\n').split('\t')
-        # Strip whitespace, pad/truncate to column count
-        fields = [f.strip() for f in fields]
-        while len(fields) < len(columns):
-            fields.append('')
-        fields = fields[:len(columns)]
-        rows.append(fields)
-
-    conn.executemany(insert_sql, rows)
+    meta_defs = ', '.join(f'[{c}] TEXT' for c in METADATA_COLS)
+    conn.execute(f"CREATE TABLE [{table_name}] ({col_defs}, {meta_defs})")
+    
+    # Index on key columns
+    key_cols = TABLE_KEYS[table_name]
+    key_col_sql = ', '.join(f'[{c}]' for c in key_cols)
+    conn.execute(f"CREATE INDEX [idx_{table_name}_key] ON [{table_name}] ({key_col_sql})")
+    
+    # Index on _snapshot_date
+    conn.execute(f"CREATE INDEX [idx_{table_name}_snapshot] ON [{table_name}] ([_snapshot_date])")
+    
+    # Composite index on key + snapshot_date DESC
+    conn.execute(f"CREATE INDEX [idx_{table_name}_key_snapshot] ON [{table_name}] ({key_col_sql}, [_snapshot_date] DESC)")
+    
     conn.commit()
-    return len(rows)
 
 
 def main():
+    # Remove old DB for clean schema creation
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+    
     conn = sqlite3.connect(DB_PATH)
     print(f"Database: {DB_PATH}\n")
 
@@ -92,12 +92,17 @@ def main():
         if not os.path.exists(path):
             print(f"  {table}: FILE NOT FOUND at {path}")
             continue
-        count = ingest_tsv(conn, table, path)
-        print(f"  {table}: {count:,} rows")
+        
+        columns = parse_tsv_header(path)
+        if columns is None:
+            print(f"  {table}: no header found, skipping")
+            continue
+        
+        create_table(conn, table, columns)
+        print(f"  {table}: created with {len(columns)} columns + 3 metadata cols, keys={TABLE_KEYS[table]}")
 
     conn.close()
-    size = os.path.getsize(DB_PATH)
-    print(f"\nDatabase size: {size / 1024 / 1024:.1f} MB")
+    print("\nSchema creation complete (empty tables).")
 
 
 if __name__ == '__main__':
