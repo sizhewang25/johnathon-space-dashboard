@@ -16,3 +16,12 @@
 - All 8 tables created successfully with correct schemas
 - launchlog uses composite key (Launch_Tag, Piece); all others use JCAT
 - Column counts: active=16, launchlog=20, satcat/ftocat/deepcat=42, currentcat=23, geotab=19, psatcat=28
+
+## Story #2 - Hash-dedup insert logic (2026-03-19)
+- SHA-256 hash computed from all original fields joined by tab separator
+- Existing hashes loaded in bulk per key from latest snapshot_date
+- Duplicate keys in source data (launchlog has 733 duplicate Launch_Tag+Piece combos) handled via occurrence-index tracking
+- Batch INSERT via executemany in single transaction per table
+- Row counts: launchlog=29193, active=15050, satcat=68260, currentcat=80257, geotab=1939, psatcat=26271, ftocat=1798, deepcat=1203
+- Second run produces 0 new, 0 updated for all 8 tables (dedup verified)
+- Table creation is now lazy (only if table doesn't exist), no longer drops on each run
