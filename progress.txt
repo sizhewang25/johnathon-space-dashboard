@@ -7,3 +7,12 @@
 - DB path: gcat.db (gitignored)
 - GitHub repo: sizhewang25/johnathon-space-dashboard (HTTPS push with gh token)
 - PLAN.md has full architecture spec
+
+## Story #1 - Schema with metadata columns and indexes (2026-03-19)
+- Rewrote ingest.py: schema-only creation with _row_hash, _snapshot_date, _removed_date metadata cols
+- TABLE_KEYS dict maps each table to its natural key columns
+- 3 indexes per table: key, _snapshot_date, composite key+snapshot DESC
+- parse_tsv_header() reads header from # line with tabs, cleans/deduplicates column names
+- All 8 tables created successfully with correct schemas
+- launchlog uses composite key (Launch_Tag, Piece); all others use JCAT
+- Column counts: active=16, launchlog=20, satcat/ftocat/deepcat=42, currentcat=23, geotab=19, psatcat=28
