@@ -41,3 +41,9 @@
 - query.py --tables flag shows all tables and views with row counts
 - Interactive mode shows tables/views on startup automatically
 - View counts match table counts (no removals yet in dataset)
+
+## Story #5 - README and sync.sh
+- README rewritten with architecture diagram, hash-dedup explanation, all 7 query patterns
+- sync.sh created: pulls archive repo then runs ingest.py
+- _latest views documented (e.g., active_latest)
+- Noted _removed_date uses empty string '' not NULL
