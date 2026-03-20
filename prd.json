@@ -1,0 +1,74 @@
+{
+  "feature": "Append-Only Hash-Dedup Ingest System",
+  "branchName": "feature/hash-dedup-ingest",
+  "userStories": [
+    {
+      "id": 1,
+      "title": "Refactor schema with metadata columns and primary keys",
+      "description": "Rewrite ingest.py to create tables with the 3 metadata columns (_row_hash TEXT, _snapshot_date TEXT, _removed_date TEXT) and proper indexes. Parse TSV headers, identify primary key columns per table (JCAT for most, Launch_Tag+Piece for launchlog). Create tables with all original columns + metadata. Do NOT insert data yet — just the schema creation and TSV parsing logic. Also create a TABLE_KEYS config dict mapping table names to their key column(s).",
+      "acceptanceCriteria": [
+        "Tables created with all original GCAT columns plus _row_hash, _snapshot_date, _removed_date",
+        "Indexes on key columns and _snapshot_date per table",
+        "TABLE_KEYS dict correctly maps each table to its primary key column(s)",
+        "TSV parsing handles comment lines (#), whitespace stripping, and header extraction",
+        "Running ingest.py creates empty tables with correct schema"
+      ],
+      "priority": 1,
+      "passes": false
+    },
+    {
+      "id": 2,
+      "title": "Implement append-only hash-dedup insert logic",
+      "description": "Add the core ingest logic: for each row, compute SHA-256 hash of all original fields joined by tab. Look up the latest hash for that key in the DB. If no existing row or hash differs, INSERT with _snapshot_date=today and _row_hash=hash. If hash matches, skip. Use batch operations for performance (load all existing hashes into a dict first, then batch INSERT new/changed rows in a single transaction). Print summary: new, updated, unchanged counts per table.",
+      "acceptanceCriteria": [
+        "SHA-256 computed from all original fields joined by tab separator",
+        "Existing hashes loaded in bulk (SELECT key, _row_hash WHERE _snapshot_date = max) into dict",
+        "New/changed rows batch-inserted in single transaction",
+        "Summary printed: X new, Y updated, Z unchanged per table",
+        "Re-running same data twice produces 0 new + 0 updated on second run",
+        "Running ingest.py successfully loads all 8 tables with correct row counts"
+      ],
+      "priority": 2,
+      "passes": false
+    },
+    {
+      "id": 3,
+      "title": "Implement removal detection",
+      "description": "After inserting new/changed rows, detect keys that were present in the DB (latest snapshot, _removed_date IS NULL) but are missing from today's source data. For these, UPDATE their latest row to set _removed_date = today's date. Print count of removed records per table.",
+      "acceptanceCriteria": [
+        "Keys present in DB but missing from source get _removed_date set to today",
+        "Only the latest version of removed keys is updated (not all historical versions)",
+        "Removal count printed per table",
+        "A key that reappears in future data gets a new INSERT (not un-removed)"
+      ],
+      "priority": 3,
+      "passes": false
+    },
+    {
+      "id": 4,
+      "title": "Create convenience views and update query.py",
+      "description": "Create SQL views for each table: {table}_latest (current state, excluding removed) and {table}_at(date) pattern documented. Update query.py to list available tables and views on startup in interactive mode. Also add a --tables flag to list all tables with row counts.",
+      "acceptanceCriteria": [
+        "Views created: active_latest, satcat_latest, etc. for all 8 tables",
+        "Views correctly show only the latest non-removed version of each record",
+        "query.py --tables shows all tables and views with row counts",
+        "Interactive mode shows available tables/views on startup"
+      ],
+      "priority": 4,
+      "passes": false
+    },
+    {
+      "id": 5,
+      "title": "Update README and add sync.sh",
+      "description": "Update README.md with the new architecture, example queries (latest state, point-in-time, daily changes, history of an object, growth over time). Create sync.sh that pulls the archive repo and runs ingest. Make it executable.",
+      "acceptanceCriteria": [
+        "README documents append-only hash-dedup approach",
+        "README has example queries for all query patterns from PLAN.md",
+        "sync.sh pulls archive and runs ingest.py",
+        "sync.sh is executable"
+      ],
+      "priority": 5,
+      "passes": false
+    }
+  ]
+}

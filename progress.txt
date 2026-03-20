@@ -1,0 +1,9 @@
+--- Project Init (2026-03-19) ---
+- Project created with basic full-reload ingest.py and query.py
+- 8 GCAT TSV tables: launchlog, active, satcat, currentcat, geotab, psatcat, ftocat, deepcat
+- Data source: ../johnathon-space-archives/data/*.tsv
+- TSV quirks: header line starts with #, fields tab-separated, whitespace-padded
+- Primary keys: JCAT for most tables, Launch_Tag+Piece for launchlog
+- DB path: gcat.db (gitignored)
+- GitHub repo: sizhewang25/johnathon-space-dashboard (HTTPS push with gh token)
+- PLAN.md has full architecture spec
