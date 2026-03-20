@@ -31,7 +31,7 @@ Every table keeps its original GCAT columns plus three metadata columns:
 |--------|------|-------------|
 | `_row_hash` | TEXT | SHA-256 of all original fields concatenated |
 | `_snapshot_date` | TEXT | ISO date when this version was ingested (e.g. `2026-03-19`) |
-| `_is_removed` | INTEGER | 1 if row was present before but missing in latest source data |
+| `_removed_date` | TEXT | ISO date when row disappeared from source (NULL if still present) |
 
 ### Primary Keys per Table
 
@@ -71,7 +71,7 @@ For each table:
      f. If existing hash != new hash → INSERT new version with today's date
   3. Detect removals:
      a. Get all keys present in DB's latest snapshot but NOT in today's source
-     b. INSERT a removal marker row: original fields from last version + _is_removed=1 + today's date
+     b. UPDATE the latest row for that key: SET _removed_date = today's date
   4. Print summary: new records, updated records, removed records, unchanged
 ```
 
@@ -91,7 +91,7 @@ SELECT a.* FROM active a
 INNER JOIN (
   SELECT JCAT, MAX(_snapshot_date) as max_date 
   FROM active 
-  WHERE _is_removed = 0
+  WHERE _removed_date IS NULL
   GROUP BY JCAT
 ) latest ON a.JCAT = latest.JCAT AND a._snapshot_date = latest.max_date;
 ```
@@ -102,7 +102,7 @@ CREATE VIEW active_latest AS
 SELECT a.* FROM active a
 INNER JOIN (
   SELECT JCAT, MAX(_snapshot_date) as max_date 
-  FROM active WHERE _is_removed = 0 GROUP BY JCAT
+  FROM active WHERE _removed_date IS NULL GROUP BY JCAT
 ) l ON a.JCAT = l.JCAT AND a._snapshot_date = l.max_date;
 ```
 
@@ -114,7 +114,8 @@ SELECT a.* FROM active a
 INNER JOIN (
   SELECT JCAT, MAX(_snapshot_date) as max_date 
   FROM active 
-  WHERE _snapshot_date <= '2026-04-01' AND _is_removed = 0
+  WHERE _snapshot_date <= '2026-04-01' 
+    AND (_removed_date IS NULL OR _removed_date > '2026-04-01')
   GROUP BY JCAT
 ) snap ON a.JCAT = snap.JCAT AND a._snapshot_date = snap.max_date;
 ```
@@ -132,9 +133,9 @@ AND NOT EXISTS (
   SELECT 1 FROM active b WHERE b.JCAT = a.JCAT AND b._snapshot_date < '2026-03-20'
 );
 
--- Removed satellites
+-- Satellites removed on that day
 SELECT * FROM active 
-WHERE _snapshot_date = '2026-03-20' AND _is_removed = 1;
+WHERE _removed_date = '2026-03-20';
 ```
 
 ### History of a single object
@@ -149,7 +150,7 @@ SELECT * FROM active WHERE JCAT = 'S62492' ORDER BY _snapshot_date;
 ```sql
 -- Active satellite count per snapshot date
 SELECT _snapshot_date, COUNT(DISTINCT JCAT) as active_count
-FROM active WHERE _is_removed = 0
+FROM active WHERE _removed_date IS NULL
 GROUP BY _snapshot_date ORDER BY _snapshot_date;
 ```
 
